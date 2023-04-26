@@ -22,6 +22,9 @@ library(raster)  # spatial
 library(terra)   # spatial
 library(sf)      # spatial
 library(tmap)    # mapping
+library(elevatr)
+library(raster)
+
 ```
 
 # Read in our data
@@ -32,20 +35,65 @@ This was collected by Dr G over the course of a few weeks. The unit of analysis 
 
 
 ```{r}
-AllData    <- read_excel("/Users/hlg5155/Documents/GitHub/Teaching/Stat462-TempLab/Data/STAT462_TrainingData.xlsx")
-AllData$DateTime <- paste(AllData$Date,"T",sprintf("%02d",AllData$Hour),":00:00",sep="")
-AllData$Date <- as.Date(AllData$Date)
-AllData$DateTime <-      as.POSIXct( AllData$DateTime ,format="%Y-%m-%dT%H:%M:%OS")
+AllData    <- read_excel("STAT462_TrainingData.xlsx")
 
+# Make the date/time
+AllData$DateTime <- paste(AllData$Date,"T",
+                          sprintf("%02d",AllData$Hour),
+                          ":00:00",sep="")
+
+# Make the date
+AllData$Date <- as.Date(AllData$Date)
+AllData$DateTime <- as.POSIXct( AllData$DateTime ,format="%Y-%m-%dT%H:%M:%OS")
+AllData$TimeStamp <-substr(as.character(AllData$DateTime),12,
+                              nchar(as.character(AllData$DateTime)))
+
+## Remove half hour slots
+AllData$Key <- paste(AllData$Serial,AllData$DateTime)
+AllData <- AllData[which(duplicated(AllData$Key) ==FALSE),]
+
+# Get rid of missing data
 AllData    <- na.omit(AllData)
+
+# Make spacial - units are now in metres. 
 AllData.sf <- st_as_sf(AllData,coords=c( "X","Y"),crs="EPSG:32617")
 ```
 
 
 
-## Boundry and raster data
+## Get the final output grid
 
-This will be useful in making pretty plots - and assessing your output.
+```{r}
+library(tigris)
+SCT <- county_subdivisions(state="PA", county = "Centre")
+SCT <- st_transform(SCT,crs="EPSG:32617")
+st_write(SCT, "./Data/BORDER_PA_Centre_SubDivisions.shp",append=FALSE)
+
+OutputArea <- st_geometry(SCT[SCT$NAME == "State College",])
+st_write(OutputArea, "./Data/BORDER_STATECOLLEGE_TOWNSHIP.shp",append=FALSE)
+
+```
+
+```{r}
+Border_Centre.    <- st_read( "./Data/BORDER_PA_Centre_SubDivisions.shp")
+Border_OutputArea <- st_read( "./Data/BORDER_STATECOLLEGE_TOWNSHIP.shp")
+Border_OutputArea_longlat <- st_transform(Border_OutputArea,crs="EPSG:4326")
+
+elev     <- get_elev_raster(Border_OutputArea_longlat,z=11,clip="locations")
+elev     <- projectRaster(elev, crs="+init=EPSG:32617")
+elev     <- crop(elev,Border_OutputArea)
+
+Output <- raster::as.data.frame(elev,xy=TRUE)
+names(Output) <- c("X","Y","Elevation")
+
+Output.sf <- st_as_sf(Output,coords=c( "X","Y"),crs="EPSG:32617")
+plot(Output.sf)
+
+
+
+
+```
+
 
 DR G WILL ADD IN CODE HERE
 
@@ -64,7 +112,7 @@ We're also going to want to include some predictor factors.  This code will allo
 # e.g. the data about each point rather than our response.
 # These are things that don't change with time
 
-StationInfo <- AllData.sf %>%
+TrainingDataRaw <- AllData.sf %>%
   group_by(Serial) %>%
   summarise(TownshipName = first(TownshipName),
             Elevation = first(Elevation_1m),
@@ -74,10 +122,36 @@ StationInfo <- AllData.sf %>%
             LandCover_Code = first(LandCover_Code),
             NCLD_Percent_Tree_Cover = first(NCLD_Percent_Tree_Cover),
             NCLD_Percent_Concrete = first(NCLD_Percent_Concrete),
-            DistRoad = first(DistanceToRoad)) %>%
+            DistRoad = first(DistanceToRoad)
+            #Date = first(Date)
+            ) %>%
   arrange(Serial, .locale = "en")
 
-NumberStations <- nrow(StationInfo)
+
+
+TrainingData <- AllData[AllData$TimeStamp %in% "00:00:00",]
+
+TrainingData <- TrainingData[which(TrainingData$Temp_F < 60),]
+
+
+TrainingData <- TrainingDataRaw
+
+Midnight_Temp_F <- AllData[AllData$TimeStamp %in% "00:00:00",]
+
+TrainingData <- TrainingData[TrainingData$Date > as.Date("2023-02-01"),]
+
+TrainingData <- merge(TrainingData,Midnight_Temp_F,by=c(),all.x=TRUE,all.y=TRUE)
+
+airport <- read_excel("airport.xlsx")
+
+airport$Date <- as.Date(airport$DateTime)
+
+
+
+
+TrainingData <- merge(TrainingData,airport,by="Date",all.x=TRUE,all.y=TRUE)
+
+TrainingData$TempDifference <- TrainingData$Temp_F - TrainingData$AirportTemp
 
 ```
 
